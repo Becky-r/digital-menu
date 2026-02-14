@@ -16,6 +16,7 @@ import { useOrderTracking } from "@/lib/order-tracking-context"
 import { PaymentMethodSelector } from "./payment-method-selector"
 import { SplitBillManager } from "./split-bill-manager"
 import { TipCalculator } from "./tip-calculator"
+import { createOrderAction } from "@/app/actions/create-order"
 
 interface CheckoutModalProps {
   isOpen: boolean
@@ -65,35 +66,63 @@ export function CheckoutModal({ isOpen, onClose }: CheckoutModalProps) {
   }
 
   const handleProcessPayment = async () => {
-    setIsProcessing(true)
-
-    // Simulate payment processing
-    await new Promise((resolve) => setTimeout(resolve, 2000))
-
-    // Create tracked order
-    const trackedOrder = createOrder({
-      items: state.items,
-      customerName: customerInfo.name,
-      tableNumber: state.tableNumber || "1",
-      totalAmount: total,
-      currency: state.currency,
-      paymentMethod: selectedPaymentMethod,
-      tip: tipAmount,
-      orderType,
-      scheduledTime,
-      specialInstructions,
-    })
-
-    // Start order progress simulation
-    simulateOrderProgress(trackedOrder.id)
-
-    // Request notification permission
-    if ("Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission()
+    if (!customerInfo.name || !customerInfo.phone || !selectedPaymentMethod) {
+      alert("Please fill in all required fields (Name, Phone, Payment Method)")
+      return
     }
 
-    setPaymentComplete(true)
-    setIsProcessing(false)
+    setIsProcessing(true)
+
+    try {
+      // Create tracked order locally
+      const trackedOrder = createOrder({
+        items: state.items,
+        customerName: customerInfo.name,
+        tableNumber: state.tableNumber || "1",
+        totalAmount: total,
+        currency: state.currency,
+        paymentMethod: selectedPaymentMethod,
+        tip: tipAmount,
+        orderType,
+        scheduledTime,
+        specialInstructions,
+      })
+
+      // Send to database
+      const result = await createOrderAction({
+        customerName: customerInfo.name,
+        customerPhone: customerInfo.phone,
+        customerEmail: customerInfo.email,
+        tableNumber: state.tableNumber || "1",
+        totalAmount: total,
+        currency: state.currency,
+        paymentMethod: selectedPaymentMethod,
+        tip: tipAmount,
+        orderType,
+        scheduledTime,
+        specialInstructions,
+        items: state.items
+      })
+
+      if (!result.success) {
+        throw new Error(result.error)
+      }
+
+      // Simulate order progress
+      simulateOrderProgress(trackedOrder.id)
+
+      // Request notification permission
+      if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission()
+      }
+
+      setPaymentComplete(true)
+    } catch (error) {
+      console.error("Payment failed:", error)
+      alert("Failed to process order. Please try again.")
+    } finally {
+      setIsProcessing(false)
+    }
   }
 
   const handleNewOrder = () => {
@@ -136,24 +165,26 @@ export function CheckoutModal({ isOpen, onClose }: CheckoutModalProps) {
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
-        <DialogHeader>
+      <DialogContent className="flex flex-col max-w-4xl max-h-[90vh] overflow-hidden p-0 gap-0">
+        <DialogHeader className="px-6 py-4 border-b">
           <DialogTitle>Checkout</DialogTitle>
           <DialogDescription>Complete your order for Table {state.tableNumber || "N/A"}</DialogDescription>
         </DialogHeader>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1">
-          <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="details">Details</TabsTrigger>
-            <TabsTrigger value="payment">Payment</TabsTrigger>
-            <TabsTrigger value="split" disabled={!splitBill}>
-              Split Bill
-            </TabsTrigger>
-            <TabsTrigger value="review">Review</TabsTrigger>
-          </TabsList>
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col flex-1 overflow-hidden">
+          <div className="px-6 py-4 border-b bg-muted/10">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="details">Details</TabsTrigger>
+              <TabsTrigger value="payment">Payment</TabsTrigger>
+              <TabsTrigger value="split">
+                Split Bill
+              </TabsTrigger>
+              <TabsTrigger value="review">Review</TabsTrigger>
+            </TabsList>
+          </div>
 
-          <div className="flex-1 overflow-y-auto">
-            <TabsContent value="details" className="space-y-6 mt-6">
+          <div className="flex-1 overflow-y-auto p-6">
+            <TabsContent value="details" className="mt-0 space-y-6">
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -234,7 +265,7 @@ export function CheckoutModal({ isOpen, onClose }: CheckoutModalProps) {
               </div>
             </TabsContent>
 
-            <TabsContent value="payment" className="space-y-6 mt-6">
+            <TabsContent value="payment" className="mt-0 space-y-6">
               <div className="space-y-4">
                 <PaymentMethodSelector
                   selectedMethod={selectedPaymentMethod}
@@ -243,28 +274,51 @@ export function CheckoutModal({ isOpen, onClose }: CheckoutModalProps) {
                 />
 
                 <TipCalculator subtotal={subtotal} currency={state.currency} onTipChange={setTipAmount} />
-
-                <div className="flex items-center space-x-2">
-                  <Checkbox id="split-bill" checked={splitBill} onCheckedChange={setSplitBill} />
-                  <Label htmlFor="split-bill" className="flex items-center cursor-pointer">
-                    <Users className="h-4 w-4 mr-2" />
-                    Split bill with others
-                  </Label>
-                </div>
               </div>
             </TabsContent>
 
-            <TabsContent value="split" className="space-y-6 mt-6">
-              <SplitBillManager
-                items={state.items}
-                subtotal={subtotal}
-                tax={tax}
-                tip={tipAmount}
-                currency={state.currency}
-              />
+            <TabsContent value="split" className="mt-0 space-y-6">
+              {!splitBill ? (
+                <div className="flex flex-col items-center justify-center py-12 space-y-4 text-center h-full">
+                  <div className="p-4 bg-muted rounded-full">
+                    <Users className="h-8 w-8 text-muted-foreground" />
+                  </div>
+                  <h3 className="text-lg font-semibold">Split the Bill?</h3>
+                  <p className="text-muted-foreground max-w-sm">
+                    You can split the total amount among multiple people. Would you like to enable bill splitting?
+                  </p>
+                  <Button onClick={() => setSplitBill(true)} className="mt-2">
+                    Enable Bill Splitting
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center bg-muted/30 p-4 rounded-lg border">
+                    <div className="flex items-center">
+                      <CheckCircle className="h-5 w-5 text-green-500 mr-2" />
+                      <span className="font-medium">Bill Splitting Active</span>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSplitBill(false)}
+                      className="h-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                    >
+                      Disable
+                    </Button>
+                  </div>
+                  <SplitBillManager
+                    items={state.items}
+                    subtotal={subtotal}
+                    tax={tax}
+                    tip={tipAmount}
+                    currency={state.currency}
+                  />
+                </div>
+              )}
             </TabsContent>
 
-            <TabsContent value="review" className="space-y-6 mt-6">
+            <TabsContent value="review" className="mt-0 space-y-6">
               <div className="space-y-4">
                 {/* Order Summary */}
                 <div className="border rounded-lg p-4">
@@ -322,7 +376,7 @@ export function CheckoutModal({ isOpen, onClose }: CheckoutModalProps) {
           </div>
         </Tabs>
 
-        <div className="flex justify-between items-center pt-4 border-t">
+        <div className="flex justify-between items-center p-6 border-t bg-background">
           <div className="text-sm text-muted-foreground">
             Total: <span className="font-semibold text-primary">{formatPrice(total)}</span>
           </div>
@@ -333,7 +387,7 @@ export function CheckoutModal({ isOpen, onClose }: CheckoutModalProps) {
             {activeTab === "review" ? (
               <Button
                 onClick={handleProcessPayment}
-                disabled={isProcessing || !selectedPaymentMethod || !customerInfo.name || !customerInfo.phone}
+                disabled={isProcessing}
                 className="bg-primary hover:bg-primary/90"
               >
                 {isProcessing ? (
